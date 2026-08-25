@@ -8,7 +8,7 @@ pipeline {
         ECR_REGISTRY = '811320358992.dkr.ecr.ap-south-1.amazonaws.com'
         ECR_IMAGE = "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
         LOCAL_IMAGE = "${ECR_REPO}:${IMAGE_TAG}"
-        CONTAINER_NAME = 'prgx-aiops-api-v6'
+        CONTAINER_NAME = 'prgx-aiops-api'
         APP_PORT = '8002'
     }
 
@@ -169,10 +169,19 @@ pipeline {
                     echo "Deploying verified image:"
                     echo "${ECR_IMAGE}"
 
-                    echo "Pulling image from ECR..."
+                    PREVIOUS_IMAGE=""
+
+                    if docker inspect ${CONTAINER_NAME} >/dev/null 2>&1; then
+                        PREVIOUS_IMAGE=$(docker inspect ${CONTAINER_NAME} --format '{{.Config.Image}}')
+                        echo "Previous deployed image: ${PREVIOUS_IMAGE}"
+                    else
+                        echo "No previous deployment found."
+                    fi
+
+                    echo "Pulling new image from ECR..."
                     docker pull ${ECR_IMAGE}
 
-                    echo "Removing previous deployment if present..."
+                    echo "Removing previous deployment..."
                     docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
                     echo "Starting new container..."
@@ -186,27 +195,69 @@ pipeline {
                     echo "Waiting for application startup..."
                     sleep 5
 
-                    echo "Checking container status..."
-                    docker ps \
-                        --filter "name=${CONTAINER_NAME}"
-
                     echo "Running health check..."
 
-                    curl --fail \
-                        --silent \
-                        --show-error \
-                        http://127.0.0.1:${APP_PORT}/health
+                    if ! curl --fail --silent --show-error \
+                        http://127.0.0.1:${APP_PORT}/health; then
+
+                        echo "Health check failed."
+                        DEPLOY_OK=false
+                    else
+                        DEPLOY_OK=true
+                    fi
 
                     echo
                     echo "Running prediction check..."
 
-                    curl --fail \
-                        --silent \
-                        --show-error \
-                        http://127.0.0.1:${APP_PORT}/predict
+                    if [ "${DEPLOY_OK}" = "true" ]; then
+                        if ! curl --fail --silent --show-error \
+                            http://127.0.0.1:${APP_PORT}/predict; then
+                            DEPLOY_OK=false
+                        fi
+                    fi
 
                     echo
-                    echo "Deployment successful."
+
+                    if [ "${DEPLOY_OK}" = "true" ]; then
+                        echo "Deployment successful."
+                        echo "Running image:"
+                        docker inspect ${CONTAINER_NAME} --format '{{.Config.Image}}'
+                    else
+                        echo "Deployment validation failed."
+
+                        if [ -n "${PREVIOUS_IMAGE}" ]; then
+                            echo "Rolling back to: ${PREVIOUS_IMAGE}"
+
+                            docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+
+                            docker pull ${PREVIOUS_IMAGE}
+
+                            docker run -d \
+                                --name ${CONTAINER_NAME} \
+                                -p ${APP_PORT}:8000 \
+                                --restart unless-stopped \
+                                ${PREVIOUS_IMAGE}
+
+                            sleep 5
+
+                            echo "Validating rollback..."
+
+                            curl --fail --silent --show-error \
+                                http://127.0.0.1:${APP_PORT}/health
+
+                            echo
+
+                            curl --fail --silent --show-error \
+                                http://127.0.0.1:${APP_PORT}/predict
+
+                            echo
+                            echo "Rollback successful."
+                        else
+                            echo "No previous image available for rollback."
+                        fi
+
+                        exit 1
+                    fi
                 '''
             }
         }
