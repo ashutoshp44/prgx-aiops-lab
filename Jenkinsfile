@@ -4,7 +4,7 @@ pipeline {
     environment {
         AWS_REGION = 'ap-south-1'
         ECR_REPO = 'prgx-aiops-api'
-        IMAGE_TAG = '6'
+        IMAGE_TAG = "${BUILD_NUMBER}"
         ECR_REGISTRY = '811320358992.dkr.ecr.ap-south-1.amazonaws.com'
         ECR_IMAGE = "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
         LOCAL_IMAGE = "${ECR_REPO}:${IMAGE_TAG}"
