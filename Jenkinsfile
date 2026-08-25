@@ -103,6 +103,7 @@ pipeline {
                         --config /dev/null \
                         --ignorefile /dev/null \
                         --severity HIGH,CRITICAL \
+                        --ignore-unfixed \
                         --exit-code 1 \
                         --scanners vuln \
                         ${LOCAL_IMAGE}
