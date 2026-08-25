@@ -2,26 +2,21 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION   = 'ap-south-1'
-        ECR_REPO     = 'prgx-aiops-api'
+        AWS_REGION = 'ap-south-1'
+        ECR_REPO = 'prgx-aiops-api'
+        IMAGE_TAG = '6'
         ECR_REGISTRY = '811320358992.dkr.ecr.ap-south-1.amazonaws.com'
-
-        IMAGE_TAG   = "${BUILD_NUMBER}"
-        LOCAL_IMAGE = "${ECR_REPO}:${BUILD_NUMBER}"
-        ECR_IMAGE  = "${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}"
+        ECR_IMAGE = "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+        LOCAL_IMAGE = "${ECR_REPO}:${IMAGE_TAG}"
+        CONTAINER_NAME = 'prgx-aiops-api-v6'
+        APP_PORT = '8002'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                sh '''
-                    set -e
-                    echo "Workspace:"
-                    pwd
-                    echo "Files:"
-                    find . -maxdepth 2 -type f | sort
-                '''
+                checkout scm
             }
         }
 
@@ -38,21 +33,31 @@ pipeline {
 
                     python -m compileall app
 
-                    uvicorn app.main:app \
-                        --host 127.0.0.1 \
-                        --port 9000 \
-                        > /tmp/prgx-api-test.log 2>&1 &
+                    echo "Starting temporary test container..."
 
-                    APP_PID=$!
-                    trap 'kill $APP_PID 2>/dev/null || true' EXIT
+                    docker build -t ${LOCAL_IMAGE} .
 
-                    sleep 3
+                    docker rm -f prgx-aiops-test 2>/dev/null || true
 
-                    curl --fail http://127.0.0.1:9000/health
+                    docker run -d \
+                        --name prgx-aiops-test \
+                        -p 8001:8000 \
+                        ${LOCAL_IMAGE}
+
+                    sleep 5
+
+                    echo "Testing /health..."
+                    curl --fail --silent --show-error \
+                        http://127.0.0.1:8001/health
+
                     echo
+                    echo "Testing /predict..."
+                    curl --fail --silent --show-error \
+                        http://127.0.0.1:8001/predict
 
-                    curl --fail http://127.0.0.1:9000/predict
                     echo
+                    echo "Stopping test container..."
+                    docker rm -f prgx-aiops-test
                 '''
             }
         }
@@ -66,7 +71,8 @@ pipeline {
                         -t ${LOCAL_IMAGE} \
                         .
 
-                    docker images ${ECR_REPO}
+                    echo "Docker image built successfully."
+                    docker images ${LOCAL_IMAGE}
                 '''
             }
         }
@@ -76,18 +82,14 @@ pipeline {
                 sh '''
                     set -e
 
-                    USER_ID=$(docker inspect \
-                        ${LOCAL_IMAGE} \
-                        --format '{{.Config.User}}')
+                    USER_INFO=$(docker run --rm ${LOCAL_IMAGE} id)
 
-                    echo "Container user: ${USER_ID}"
+                    echo "Container user:"
+                    echo "${USER_INFO}"
 
-                    if [ "${USER_ID}" != "appuser" ]; then
-                        echo "ERROR: Container is not running as appuser."
-                        exit 1
-                    fi
+                    echo "${USER_INFO}" | grep -q "uid=1000"
 
-                    docker run --rm ${LOCAL_IMAGE} id
+                    echo "Non-root container security check passed."
                 '''
             }
         }
@@ -123,6 +125,8 @@ pipeline {
                     docker login \
                         --username AWS \
                         --password-stdin ${ECR_REGISTRY}
+
+                    echo "ECR login successful."
                 '''
             }
         }
@@ -132,11 +136,12 @@ pipeline {
                 sh '''
                     set -e
 
-                    docker tag \
-                        ${LOCAL_IMAGE} \
-                        ${ECR_IMAGE}
+                    docker tag ${LOCAL_IMAGE} ${ECR_IMAGE}
 
                     docker push ${ECR_IMAGE}
+
+                    echo "Image pushed successfully:"
+                    echo "${ECR_IMAGE}"
                 '''
             }
         }
@@ -150,52 +155,68 @@ pipeline {
                         --repository-name ${ECR_REPO} \
                         --image-ids imageTag=${IMAGE_TAG} \
                         --region ${AWS_REGION}
+
+                    echo "ECR image verification successful."
                 '''
             }
         }
-    }
 
         stage('Deploy to EC2') {
             steps {
                 sh '''
                     set -e
 
-                    echo "Deploying ${ECR_IMAGE}..."
+                    echo "Deploying verified image:"
+                    echo "${ECR_IMAGE}"
 
+                    echo "Pulling image from ECR..."
                     docker pull ${ECR_IMAGE}
 
-                    docker rm -f prgx-aiops-api-v6 2>/dev/null || true
+                    echo "Removing previous deployment if present..."
+                    docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+
+                    echo "Starting new container..."
 
                     docker run -d \
-                        --name prgx-aiops-api-v6 \
-                        -p 8002:8000 \
+                        --name ${CONTAINER_NAME} \
+                        -p ${APP_PORT}:8000 \
                         --restart unless-stopped \
                         ${ECR_IMAGE}
 
                     echo "Waiting for application startup..."
                     sleep 5
 
+                    echo "Checking container status..."
+                    docker ps \
+                        --filter "name=${CONTAINER_NAME}"
+
                     echo "Running health check..."
-                    curl --fail --silent --show-error \
-                        http://127.0.0.1:8002/health
+
+                    curl --fail \
+                        --silent \
+                        --show-error \
+                        http://127.0.0.1:${APP_PORT}/health
 
                     echo
                     echo "Running prediction check..."
-                    curl --fail --silent --show-error \
-                        http://127.0.0.1:8002/predict
+
+                    curl --fail \
+                        --silent \
+                        --show-error \
+                        http://127.0.0.1:${APP_PORT}/predict
 
                     echo
                     echo "Deployment successful."
                 '''
             }
         }
+    }
+
     post {
         always {
             sh '''
+                docker rm -f prgx-aiops-test 2>/dev/null || true
                 rm -rf .venv-ci || true
-                rm -f /tmp/prgx-api-test.log || true
-                docker image rm ${LOCAL_IMAGE} 2>/dev/null || true
-                docker image rm ${ECR_IMAGE} 2>/dev/null || true
             '''
         }
 
