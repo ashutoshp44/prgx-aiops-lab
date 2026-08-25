@@ -155,41 +155,40 @@ pipeline {
         }
     }
 
-    stage('Deploy to EC2') {
-        steps {
-            sh '''
-                set -e
+        stage('Deploy to EC2') {
+            steps {
+                sh '''
+                    set -e
 
-                echo "Deploying ${ECR_IMAGE}..."
+                    echo "Deploying ${ECR_IMAGE}..."
 
-                docker pull ${ECR_IMAGE}
+                    docker pull ${ECR_IMAGE}
 
-                docker rm -f prgx-aiops-api-v6 2>/dev/null || true
+                    docker rm -f prgx-aiops-api-v6 2>/dev/null || true
 
-                docker run -d \
-                    --name prgx-aiops-api-v6 \
-                    -p 8002:8000 \
-                    --restart unless-stopped \
-                    ${ECR_IMAGE}
+                    docker run -d \
+                        --name prgx-aiops-api-v6 \
+                        -p 8002:8000 \
+                        --restart unless-stopped \
+                        ${ECR_IMAGE}
 
-                echo "Waiting for application startup..."
-                sleep 5
+                    echo "Waiting for application startup..."
+                    sleep 5
 
-                echo "Running health check..."
-                curl --fail --silent --show-error \
-                    http://127.0.0.1:8002/health
+                    echo "Running health check..."
+                    curl --fail --silent --show-error \
+                        http://127.0.0.1:8002/health
 
-                echo
-                echo "Running prediction check..."
-                curl --fail --silent --show-error \
-                    http://127.0.0.1:8002/predict
+                    echo
+                    echo "Running prediction check..."
+                    curl --fail --silent --show-error \
+                        http://127.0.0.1:8002/predict
 
-                echo
-                echo "Deployment successful."
-            '''
+                    echo
+                    echo "Deployment successful."
+                '''
+            }
         }
-    }
-
     post {
         always {
             sh '''
