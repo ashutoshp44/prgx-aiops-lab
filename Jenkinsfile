@@ -171,17 +171,26 @@ pipeline {
 
                     PREVIOUS_IMAGE=""
 
-                    if docker inspect ${CONTAINER_NAME} >/dev/null 2>&1; then
-                        PREVIOUS_IMAGE=$(docker inspect ${CONTAINER_NAME} --format '{{.Config.Image}}')
-                        echo "Previous deployed image: ${PREVIOUS_IMAGE}"
-                    else
-                        echo "No previous deployment found."
+                    OLD_CONTAINER=$(docker ps \
+                        --filter "publish=${APP_PORT}" \
+                        --format "{{.ID}}" | head -n 1 || true)
+
+                    if [ -n "${OLD_CONTAINER}" ]; then
+                        PREVIOUS_IMAGE=$(docker inspect "${OLD_CONTAINER}" \
+                            --format '{{.Config.Image}}' || true)
+                        echo "Previous image: ${PREVIOUS_IMAGE}"
                     fi
 
-                    echo "Pulling new image from ECR..."
+                    echo "Pulling new image..."
                     docker pull ${ECR_IMAGE}
 
-                    echo "Removing previous deployment..."
+                    echo "Freeing port ${APP_PORT}..."
+
+                    docker ps \
+                        --filter "publish=${APP_PORT}" \
+                        --format "{{.ID}}" | \
+                    xargs -r docker rm -f
+
                     docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
                     echo "Starting new container..."
@@ -192,23 +201,19 @@ pipeline {
                         --restart unless-stopped \
                         ${ECR_IMAGE}
 
-                    echo "Waiting for application startup..."
+                    echo "Waiting for startup..."
                     sleep 5
 
-                    echo "Running health check..."
+                    DEPLOY_OK=true
 
+                    echo "Health check..."
                     if ! curl --fail --silent --show-error \
                         http://127.0.0.1:${APP_PORT}/health; then
-
-                        echo "Health check failed."
                         DEPLOY_OK=false
-                    else
-                        DEPLOY_OK=true
                     fi
 
                     echo
-                    echo "Running prediction check..."
-
+                    echo "Prediction check..."
                     if [ "${DEPLOY_OK}" = "true" ]; then
                         if ! curl --fail --silent --show-error \
                             http://127.0.0.1:${APP_PORT}/predict; then
@@ -220,27 +225,25 @@ pipeline {
 
                     if [ "${DEPLOY_OK}" = "true" ]; then
                         echo "Deployment successful."
-                        echo "Running image:"
-                        docker inspect ${CONTAINER_NAME} --format '{{.Config.Image}}'
+                        docker inspect ${CONTAINER_NAME} \
+                            --format '{{.Config.Image}}'
                     else
-                        echo "Deployment validation failed."
+                        echo "Deployment failed."
+
+                        docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
                         if [ -n "${PREVIOUS_IMAGE}" ]; then
-                            echo "Rolling back to: ${PREVIOUS_IMAGE}"
+                            echo "Rolling back to ${PREVIOUS_IMAGE}..."
 
-                            docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
-
-                            docker pull ${PREVIOUS_IMAGE}
+                            docker pull "${PREVIOUS_IMAGE}"
 
                             docker run -d \
                                 --name ${CONTAINER_NAME} \
                                 -p ${APP_PORT}:8000 \
                                 --restart unless-stopped \
-                                ${PREVIOUS_IMAGE}
+                                "${PREVIOUS_IMAGE}"
 
                             sleep 5
-
-                            echo "Validating rollback..."
 
                             curl --fail --silent --show-error \
                                 http://127.0.0.1:${APP_PORT}/health
@@ -253,7 +256,7 @@ pipeline {
                             echo
                             echo "Rollback successful."
                         else
-                            echo "No previous image available for rollback."
+                            echo "No previous image available."
                         fi
 
                         exit 1
