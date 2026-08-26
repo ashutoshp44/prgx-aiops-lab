@@ -208,7 +208,7 @@ pipeline {
 
                     echo "Health check..."
                     if ! curl --fail --silent --show-error \
-                        http://127.0.0.1:${APP_PORT}/health-rollback-test; then
+                        http://127.0.0.1:${APP_PORT}/health; then
                         DEPLOY_OK=false
                     fi
 
