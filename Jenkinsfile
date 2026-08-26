@@ -35,7 +35,7 @@ pipeline {
 
                     echo "Starting temporary test container..."
 
-                    docker build -t ${LOCAL_IMAGE} .
+                    docker build --pull -t ${LOCAL_IMAGE} .
 
                     docker rm -f prgx-aiops-test 2>/dev/null || true
 
