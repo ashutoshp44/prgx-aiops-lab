@@ -67,7 +67,7 @@ pipeline {
                 sh '''
                     set -e
 
-                    docker build \
+                    docker build --pull \
                         -t ${LOCAL_IMAGE} \
                         .
 
